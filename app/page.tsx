@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Trash2, Plus, Upload, Download, Users } from 'lucide-react';
 
