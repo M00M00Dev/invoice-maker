@@ -1,5 +1,5 @@
 /** * Invoice Generator
- * Version: 2602161528
+ * Version: 2602161535
  */
 'use client';
 
@@ -82,6 +82,7 @@ export default function InvoiceGenerator() {
   // 2. Auto Logo Logic
   useEffect(() => {
     if (selectedCustomerId === 1) {
+      // Points to /public/pad-logo.png in the repository
       setLogoSrc('/pad-logo.png');
     } else {
       setLogoSrc(null);
@@ -148,15 +149,23 @@ export default function InvoiceGenerator() {
     
     setIsDownloading(true);
     const element = document.getElementById('invoice-preview');
+    if (!element) {
+      setIsDownloading(false);
+      return;
+    }
+
+    // Version String for filename
+    const datestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `Invoice_${currentCustomer.nameLine1.replace(/\s+/g, '_')}_${datestamp}.pdf`;
     
     const opt = {
       margin: 0,
-      filename: `Invoice_${currentCustomer.nameLine1.replace(/\s+/g, '_')}_${new Date().getTime()}.pdf`,
+      filename: filename,
       image: { type: 'jpeg', quality: 0.98 },
       html2canvas: { 
         scale: 2, 
         useCORS: true, 
-        allowTaint: true,
+        logging: true, // Helpful for debugging Vercel deployment
         letterRendering: true,
         scrollY: 0,
         scrollX: 0
@@ -165,6 +174,7 @@ export default function InvoiceGenerator() {
     };
 
     try {
+      // Execute generating content
       await html2pdf().set(opt).from(element).save();
     } catch (err) {
       console.error('PDF Generation Error:', err);
@@ -187,7 +197,7 @@ export default function InvoiceGenerator() {
         <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Invoice Generator</h1>
-            <p className="text-[10px] text-gray-400 font-mono tracking-wider">2602161528</p>
+            <p className="text-[10px] text-gray-400 font-mono tracking-wider uppercase">v.2602161535</p>
           </div>
           <div className="flex items-center gap-2 text-xs">
             {libraryError ? (
@@ -395,8 +405,8 @@ export default function InvoiceGenerator() {
                   <p className="text-gray-300 font-medium">ABN: 38 496 177 905</p>
                 </div>
               </div>
-              <div className="text-gray-500 font-mono text-[9px] print:hidden opacity-50">
-                2602161528
+              <div className="text-gray-500 font-mono text-[9px] print:hidden opacity-50 uppercase">
+                v.2602161535
               </div>
             </div>
           </div>
