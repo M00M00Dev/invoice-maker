@@ -1,10 +1,10 @@
 /** * Invoice Generator
- * Version: 2604171430
+ * Version: 2604171445
  */
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Trash2, Plus, Upload, Users, Printer, Edit3 } from 'lucide-react';
+import { Trash2, Plus, Upload, Users, Printer, Edit3, Landmark } from 'lucide-react';
 
 // --- Interfaces & Types ---
 
@@ -78,6 +78,14 @@ export default function InvoiceGenerator() {
   // Custom Template Fields
   const [customSubject, setCustomSubject] = useState("Custom Invoice Subject");
   const [customRecipient, setCustomRecipient] = useState<Customer>(customers[2]);
+  
+  // Bank Details State
+  const [bankDetails, setBankDetails] = useState({
+    name: "Chaitawat Poovaviranon",
+    bsb: "063-607",
+    account: "1085 5707",
+    abn: "38 496 177 905"
+  });
 
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -182,7 +190,7 @@ export default function InvoiceGenerator() {
       <div className="max-w-4xl mx-auto mb-6 bg-white rounded-lg shadow p-6 relative no-print">
         <div className="flex justify-between items-start mb-4">
           <h1 className="text-2xl font-bold text-gray-800">Invoice Generator</h1>
-          <span className="text-[10px] text-gray-400 font-mono mt-2 tracking-wider uppercase">2604171430</span>
+          <span className="text-[10px] text-gray-400 font-mono mt-2 tracking-wider uppercase">2604171445</span>
         </div>
         
         {/* Template Selector */}
@@ -226,6 +234,29 @@ export default function InvoiceGenerator() {
               <div className="space-y-2">
                 <label className="text-xs font-bold text-gray-500 uppercase">Address Line 2 (City State Code)</label>
                 <input value={customRecipient.addressLine2} onChange={(e) => setCustomRecipient({...customRecipient, addressLine2: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
+              </div>
+
+              {/* Bank Details Customization */}
+              <div className="md:col-span-2 pt-4 border-t border-gray-100 mt-2">
+                 <label className="text-xs font-bold text-purple-600 uppercase flex items-center gap-1 mb-3"><Landmark className="w-3 h-3"/> Custom Bank Details</label>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">Bank Account Name</label>
+                      <input value={bankDetails.name} onChange={(e) => setBankDetails({...bankDetails, name: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">BSB</label>
+                      <input value={bankDetails.bsb} onChange={(e) => setBankDetails({...bankDetails, bsb: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">Account Number</label>
+                      <input value={bankDetails.account} onChange={(e) => setBankDetails({...bankDetails, account: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase">ABN</label>
+                      <input value={bankDetails.abn} onChange={(e) => setBankDetails({...bankDetails, abn: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
+                    </div>
+                 </div>
               </div>
             </div>
           )}
@@ -368,13 +399,13 @@ export default function InvoiceGenerator() {
               <div className="space-y-4">
                 <h3 className="text-gray-400 uppercase mb-4 tracking-wider">Bank Details</h3>
                 <div className="leading-relaxed">
-                  <p className="font-bold text-sm mb-1">Chaitawat Poovaviranon</p>
-                  <p className="text-gray-300">BSB: 063-607</p>
-                  <p className="text-gray-300">Account: 1085 5707</p>
-                  <p className="text-gray-300">ABN: 38 496 177 905</p>
+                  <p className="font-bold text-sm mb-1">{bankDetails.name}</p>
+                  <p className="text-gray-300">BSB: {bankDetails.bsb}</p>
+                  <p className="text-gray-300">Account: {bankDetails.account}</p>
+                  <p className="text-gray-300">ABN: {bankDetails.abn}</p>
                 </div>
               </div>
-              <div className="text-gray-500 font-mono text-[9px] print:hidden uppercase">VER: 2604171430</div>
+              <div className="text-gray-500 font-mono text-[9px] print:hidden uppercase">VER: 2604171445</div>
             </div>
           </div>
         </div>
