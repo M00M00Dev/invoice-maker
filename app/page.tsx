@@ -1,10 +1,12 @@
 /** * Invoice Generator
- * Version: 2604171445
+ * Version: 2608111700
  */
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Trash2, Plus, Upload, Users, Printer, Edit3, Landmark } from 'lucide-react';
+import { Trash2, Plus, Upload, Users, Printer, Edit3, Landmark, Search, Send, Rows, X } from 'lucide-react';
+import { toJpeg } from 'html-to-image';
+import jsPDF from 'jspdf';
 
 // --- Interfaces & Types ---
 
@@ -15,6 +17,7 @@ interface Customer {
   nameLine2: string;
   addressLine1: string;
   addressLine2: string;
+  defaultSubject: string;
 }
 
 interface InvoiceItem {
@@ -23,6 +26,18 @@ interface InvoiceItem {
   date: string;
   reference: string;
   amount: number | string;
+}
+
+interface SquareLocation {
+  id: string;
+  name: string;
+}
+
+interface QuestOrderMatch {
+  orderId: string;
+  date: string;
+  description: string;
+  amount: number;
 }
 
 // --- Main Application ---
@@ -40,21 +55,23 @@ export default function InvoiceGenerator() {
   };
 
   const customers: Customer[] = [
-    { 
-      id: 1, 
-      displayName: "Quest Frankston on the Bay", 
-      nameLine1: "Quest Frankston", 
-      nameLine2: "on the Bay", 
-      addressLine1: "435 Nepean Hwy", 
-      addressLine2: "Frankston VIC 3199" 
+    {
+      id: 1,
+      displayName: "Quest Frankston on the Bay",
+      nameLine1: "Quest Frankston",
+      nameLine2: "on the Bay",
+      addressLine1: "435 Nepean Hwy",
+      addressLine2: "Frankston VIC 3199",
+      defaultSubject: "Chargeback from PAD Thai Food"
     },
-    { 
-      id: 2, 
-      displayName: "MEEKHUN PTY LTD", 
-      nameLine1: "MEEKHUN PTY LTD", 
-      nameLine2: "", 
-      addressLine1: "77 Harrison Dr", 
-      addressLine2: "Noble Park VIC 3174" 
+    {
+      id: 2,
+      displayName: "MEEKHUN PTY LTD",
+      nameLine1: "MEEKHUN PTY LTD",
+      nameLine2: "",
+      addressLine1: "77 Harrison Dr",
+      addressLine2: "Noble Park VIC 3174",
+      defaultSubject: "Rent"
     },
     {
       id: 3,
@@ -62,9 +79,12 @@ export default function InvoiceGenerator() {
       nameLine1: "Recipient Name",
       nameLine2: "",
       addressLine1: "Address Line 1",
-      addressLine2: "City State Postcode"
+      addressLine2: "City State Postcode",
+      defaultSubject: "Custom Invoice Subject"
     }
   ];
+
+  const QUEST_EMAIL = 'fom.fob@questapartments.com.au';
 
   // State
   const [items, setItems] = useState<InvoiceItem[]>([
@@ -74,11 +94,16 @@ export default function InvoiceGenerator() {
   const [invoiceRef] = useState(generateReference());
   const [logoSrc, setLogoSrc] = useState<string | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number>(customers[0].id);
-  
+
+  // Subject line — editable for every template, defaults per template on switch
+  const [subject, setSubject] = useState(customers[0].defaultSubject);
+
+  // Consolidate toggle — rendering-only, never mutates the underlying items
+  const [consolidate, setConsolidate] = useState(false);
+
   // Custom Template Fields
-  const [customSubject, setCustomSubject] = useState("Custom Invoice Subject");
   const [customRecipient, setCustomRecipient] = useState<Customer>(customers[2]);
-  
+
   // Bank Details State
   const [bankDetails, setBankDetails] = useState({
     name: "Chaitawat Poovaviranon",
@@ -87,9 +112,28 @@ export default function InvoiceGenerator() {
     abn: "38 496 177 905"
   });
 
+  // Square lookup state
+  const [squareLocations, setSquareLocations] = useState<SquareLocation[]>([]);
+  const [squareLocationsLoading, setSquareLocationsLoading] = useState(false);
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
+  const [squareStartDate, setSquareStartDate] = useState('');
+  const [squareEndDate, setSquareEndDate] = useState('');
+  const [squareFetching, setSquareFetching] = useState(false);
+  const [squareError, setSquareError] = useState<string | null>(null);
+  const [squareInfo, setSquareInfo] = useState<string | null>(null);
+
+  // Export / send state
+  const [exporting, setExporting] = useState(false);
+  const [sendTo, setSendTo] = useState(QUEST_EMAIL);
+  const [showSendConfirm, setShowSendConfirm] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendSuccess, setSendSuccess] = useState(false);
+
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
+  const invoiceRef2 = useRef<HTMLDivElement>(null); // #invoice-preview node ref for export
 
   // AUTO LOGO LOGIC (Disabled for Custom)
   useEffect(() => {
@@ -101,10 +145,41 @@ export default function InvoiceGenerator() {
     // If ID is 3 (Custom), we don't force logoSrc, allowing manual upload
   }, [selectedCustomerId]);
 
+  // Reset subject + send-to defaults whenever the template changes
+  useEffect(() => {
+    const customer = customers.find(c => c.id === selectedCustomerId);
+    if (customer) setSubject(customer.defaultSubject);
+    setSendTo(selectedCustomerId === 1 ? QUEST_EMAIL : '');
+    setSquareError(null);
+    setSquareInfo(null);
+  }, [selectedCustomerId]);
+
+  // Fetch Square locations once, lazily, when the Quest template + Square section is first shown
+  useEffect(() => {
+    if (selectedCustomerId !== 1 || squareLocations.length > 0 || squareLocationsLoading) return;
+    setSquareLocationsLoading(true);
+    fetch('/api/square/locations')
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Failed to load locations (${res.status})`);
+        return data;
+      })
+      .then((data) => {
+        setSquareLocations(data.locations || []);
+        const pad = (data.locations || []).find((l: SquareLocation) => l.id === 'LKCRCTTXCQP39');
+        if (pad) setSelectedLocationId(pad.id);
+        else if (data.locations?.length) setSelectedLocationId(data.locations[0].id);
+      })
+      .catch((err) => setSquareError(err.message))
+      .finally(() => setSquareLocationsLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCustomerId]);
+
   // Derived State
   const currentCustomer = selectedCustomerId === 3 ? customRecipient : (customers.find(c => c.id === selectedCustomerId) || customers[0]);
   const isMeekhun = selectedCustomerId === 2;
   const isCustom = selectedCustomerId === 3;
+  const isQuest = selectedCustomerId === 1;
 
   const formatCurrency = (val: number | string) => {
     const num = typeof val === 'string' ? parseFloat(val) : val;
@@ -112,7 +187,14 @@ export default function InvoiceGenerator() {
   };
 
   const totalGross = items.reduce((acc, item) => acc + (parseFloat(item.amount.toString()) || 0), 0);
-  
+
+  // Rows actually rendered in the preview table. Consolidating is purely a
+  // render-time transform — `items` (the source of truth) is never touched,
+  // so toggling back and forth is non-destructive.
+  const renderRows: InvoiceItem[] = consolidate
+    ? [{ id: -1, description: 'Chargeback', date: '', reference: '', amount: totalGross }]
+    : items;
+
   const addNewItem = () => {
     const newItem: InvoiceItem = {
       id: Date.now(),
@@ -129,7 +211,7 @@ export default function InvoiceGenerator() {
   };
 
   const updateItem = (id: number, field: keyof InvoiceItem, value: string | number) => {
-    setItems(items.map(item => 
+    setItems(items.map(item =>
       item.id === id ? { ...item, [field]: value } : item
     ));
   };
@@ -143,7 +225,7 @@ export default function InvoiceGenerator() {
           description: `File: ${file.name}`,
           date: new Date().toISOString().split('T')[0],
           reference: '',
-          amount: 0 
+          amount: 0
         }));
         setItems([...items, ...newItems]);
       }
@@ -165,34 +247,159 @@ export default function InvoiceGenerator() {
     }
   };
 
-  const handlePrint = () => {
-    window.print();
+  // --- Square lookup ---
+
+  const fetchFromSquare = async () => {
+    setSquareError(null);
+    setSquareInfo(null);
+    if (!selectedLocationId || !squareStartDate || !squareEndDate) {
+      setSquareError('Pick a location and a start/end date first.');
+      return;
+    }
+    setSquareFetching(true);
+    try {
+      const res = await fetch('/api/square/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationId: selectedLocationId,
+          startDate: squareStartDate,
+          endDate: squareEndDate,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Square lookup failed (${res.status})`);
+
+      const matches: QuestOrderMatch[] = data.matches || [];
+      if (matches.length === 0) {
+        setSquareInfo(`No Quest-tagged orders found in this range (scanned ${data.ordersScanned ?? 0} orders).`);
+        return;
+      }
+
+      const newItems: InvoiceItem[] = matches.map((m, idx) => ({
+        id: Date.now() + idx,
+        description: m.description,
+        date: m.date,
+        reference: m.orderId,
+        amount: m.amount,
+      }));
+      // Review step: this replaces the editor rows with the matches, but every
+      // row stays fully editable/deletable below before the invoice is generated.
+      setItems(newItems);
+      setSquareInfo(`Found ${matches.length} Quest-tagged order(s) — review the line items below before generating the invoice.`);
+    } catch (err) {
+      setSquareError(err instanceof Error ? err.message : 'Unknown error fetching from Square');
+    } finally {
+      setSquareFetching(false);
+    }
+  };
+
+  // --- PDF export (client-side, no window.print) ---
+
+  const generatePdfBlob = async (): Promise<Blob> => {
+    const node = invoiceRef2.current;
+    if (!node) throw new Error('Invoice preview not found');
+
+    // JPEG (not PNG) keeps the file well under serverless body-size limits —
+    // a 1.5x PNG render of this page came out ~6MB, base64-inflated to ~8MB,
+    // over Vercel's ~4.5MB function payload limit. High-quality JPEG of the
+    // same render is well under 1MB with no visible quality loss for a
+    // text/table invoice.
+    const dataUrl = await toJpeg(node, {
+      pixelRatio: 1.5,
+      quality: 0.92,
+      backgroundColor: '#ffffff',
+      filter: (el) => {
+        if (el instanceof HTMLElement && el.classList?.contains('pdf-hide')) return false;
+        return true;
+      },
+    });
+
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    pdf.addImage(dataUrl, 'JPEG', 0, 0, 210, 297);
+    return pdf.output('blob');
+  };
+
+  const invoiceFilename = () => {
+    const safeSubject = subject.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '');
+    return `Invoice_${safeSubject || invoiceRef}_${invoiceDate}.pdf`;
+  };
+
+  const handleDownloadPdf = async () => {
+    setExporting(true);
+    try {
+      const blob = await generatePdfBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = invoiceFilename();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`PDF export failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // --- Send to Kayla (or whoever is in the "Send to" field) ---
+
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1] || '');
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+  const handleConfirmSend = async () => {
+    setSending(true);
+    setSendError(null);
+    setSendSuccess(false);
+    try {
+      const blob = await generatePdfBlob();
+      const pdfBase64 = await blobToBase64(blob);
+      const res = await fetch('/api/square/send-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: sendTo,
+          subject,
+          pdfBase64,
+          filename: invoiceFilename(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Send failed (${res.status})`);
+      setSendSuccess(true);
+      setShowSendConfirm(false);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Unknown error sending invoice');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-100 p-4 md:p-8 font-sans">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         .text-dark { color: #111827; }
-        .text-label { color: #9CA3AF; } 
+        .text-label { color: #9CA3AF; }
         .bg-footer { background-color: #0F172A; }
-
-        @media print {
-          .no-print { display: none !important; }
-          body { background-color: white !important; margin: 0 !important; padding: 0 !important; }
-          .min-h-screen { background-color: white !important; padding: 0 !important; }
-          #invoice-preview { box-shadow: none !important; margin: 0 !important; width: 100% !important; border: none !important; }
-          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-        }
       `}</style>
 
       {/* Editor Controls */}
       <div className="max-w-4xl mx-auto mb-6 bg-white rounded-lg shadow p-6 relative no-print">
         <div className="flex justify-between items-start mb-4">
           <h1 className="text-2xl font-bold text-gray-800">Invoice Generator</h1>
-          <span className="text-[10px] text-gray-400 font-mono mt-2 tracking-wider uppercase">2604171445</span>
+          <span className="text-[10px] text-gray-400 font-mono mt-2 tracking-wider uppercase">2608111700</span>
         </div>
-        
+
         {/* Template Selector */}
         <div className="mb-6 bg-gray-50 p-4 rounded-lg border border-gray-200">
           <div className="flex justify-between items-center mb-2">
@@ -202,7 +409,7 @@ export default function InvoiceGenerator() {
             </label>
             {isCustom && <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-bold uppercase">Custom Mode</span>}
           </div>
-          <select 
+          <select
             value={selectedCustomerId}
             onChange={(e) => setSelectedCustomerId(Number(e.target.value))}
             className="w-full md:w-1/2 p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none bg-white text-sm mb-4"
@@ -212,13 +419,15 @@ export default function InvoiceGenerator() {
             ))}
           </select>
 
+          {/* Subject line — editable for every template */}
+          <div className="space-y-2 mb-2">
+            <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1"><Edit3 className="w-3 h-3"/> Subject Line</label>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full md:w-1/2 p-2 border rounded text-sm outline-none focus:border-blue-400" placeholder="Invoice Subject" />
+          </div>
+
           {/* Custom Information Inputs */}
           {isCustom && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2 p-4 bg-white border rounded-lg border-purple-200 animate-in fade-in">
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1"><Edit3 className="w-3 h-3"/> Subject Line</label>
-                <input value={customSubject} onChange={(e) => setCustomSubject(e.target.value)} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" placeholder="Invoice Subject" />
-              </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold text-gray-500 uppercase">Recipient Name (Line 1)</label>
                 <input value={customRecipient.nameLine1} onChange={(e) => setCustomRecipient({...customRecipient, nameLine1: e.target.value})} className="w-full p-2 border rounded text-sm outline-none focus:border-purple-400" />
@@ -262,6 +471,49 @@ export default function InvoiceGenerator() {
           )}
         </div>
 
+        {/* Square Lookup — Quest chargeback workflow */}
+        {isQuest && (
+          <div className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-200">
+            <label className="flex items-center gap-2 text-sm font-semibold text-blue-900 mb-3">
+              <Search className="w-4 h-4" /> Fetch Quest Chargebacks from Square
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase">Location</label>
+                <select
+                  value={selectedLocationId}
+                  onChange={(e) => setSelectedLocationId(e.target.value)}
+                  className="w-full p-2 border rounded text-sm outline-none focus:border-blue-400 bg-white"
+                  disabled={squareLocationsLoading}
+                >
+                  {squareLocationsLoading && <option>Loading locations…</option>}
+                  {!squareLocationsLoading && squareLocations.length === 0 && <option>No locations found</option>}
+                  {squareLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase">Start Date</label>
+                <input type="date" value={squareStartDate} onChange={(e) => setSquareStartDate(e.target.value)} className="w-full p-2 border rounded text-sm outline-none focus:border-blue-400" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase">End Date</label>
+                <input type="date" value={squareEndDate} onChange={(e) => setSquareEndDate(e.target.value)} className="w-full p-2 border rounded text-sm outline-none focus:border-blue-400" />
+              </div>
+              <button
+                onClick={fetchFromSquare}
+                disabled={squareFetching}
+                className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+              >
+                <Search className="w-4 h-4" /> {squareFetching ? 'Fetching…' : 'Fetch from Square'}
+              </button>
+            </div>
+            {squareError && <p className="text-xs text-red-600 mt-2 font-medium">{squareError}</p>}
+            {squareInfo && <p className="text-xs text-blue-700 mt-2 font-medium">{squareInfo}</p>}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
           <div className="p-4 border-2 border-dashed border-blue-300 rounded-lg bg-blue-50 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-blue-100 transition-colors"
                onClick={() => fileInputRef.current?.click()}>
@@ -269,17 +521,31 @@ export default function InvoiceGenerator() {
             <p className="text-sm text-blue-700 font-medium">Upload Files</p>
             <input type="file" multiple ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
           </div>
-          
+
           <div className="flex flex-col justify-center gap-3 col-span-2 md:col-span-2">
-            <div className="flex gap-4">
+            <div className="flex gap-4 flex-wrap">
                <button onClick={addNewItem} className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-3 rounded-lg hover:bg-green-700 transition-colors font-medium">
                 <Plus className="w-5 h-5" /> Add Item
               </button>
-              <button onClick={handlePrint} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-lg">
-                <Printer className="w-5 h-5" /> Print / Save PDF
+              <button onClick={handleDownloadPdf} disabled={exporting} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-lg disabled:opacity-50">
+                <Printer className="w-5 h-5" /> {exporting ? 'Generating…' : 'Download PDF'}
               </button>
             </div>
           </div>
+        </div>
+
+        {/* Consolidate toggle */}
+        <div className="mb-6 flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="consolidate-toggle"
+            checked={consolidate}
+            onChange={(e) => setConsolidate(e.target.checked)}
+            className="w-4 h-4 accent-blue-600"
+          />
+          <label htmlFor="consolidate-toggle" className="text-sm font-medium text-gray-700 flex items-center gap-1 cursor-pointer">
+            <Rows className="w-4 h-4" /> Consolidate to one line on the invoice (line items below are kept for your records either way)
+          </label>
         </div>
 
         <div className="space-y-3">
@@ -297,11 +563,54 @@ export default function InvoiceGenerator() {
             </div>
           ))}
         </div>
+
+        {/* Send to recipient */}
+        <div className="mt-6 pt-6 border-t border-gray-100">
+          <h2 className="font-semibold text-gray-700 mb-3 flex items-center gap-2"><Send className="w-4 h-4" /> Send Invoice</h2>
+          <div className="flex flex-col md:flex-row gap-3 items-start md:items-center">
+            <input
+              type="email"
+              value={sendTo}
+              onChange={(e) => setSendTo(e.target.value)}
+              placeholder="recipient@example.com"
+              className="flex-grow p-2 border rounded text-sm outline-none focus:border-blue-400 w-full md:w-auto"
+            />
+            <button
+              onClick={() => { setSendError(null); setSendSuccess(false); setShowSendConfirm(true); }}
+              disabled={!sendTo || sending}
+              className="flex items-center justify-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-900 transition-colors font-medium disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" /> Send Invoice
+            </button>
+          </div>
+          {sendSuccess && <p className="text-xs text-green-600 mt-2 font-medium">Invoice sent to {sendTo}.</p>}
+          {sendError && <p className="text-xs text-red-600 mt-2 font-medium">{sendError}</p>}
+        </div>
       </div>
+
+      {/* Send confirmation modal — explicit click required, no auto-fire */}
+      {showSendConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 no-print p-4">
+          <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full">
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="font-bold text-gray-800 text-lg">Confirm Send</h3>
+              <button onClick={() => setShowSendConfirm(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-sm text-gray-600 mb-6">
+              Send this invoice to <span className="font-semibold text-gray-900">{sendTo}</span>?
+            </p>
+            {sendError && <p className="text-xs text-red-600 mb-4 font-medium">{sendError}</p>}
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowSendConfirm(false)} disabled={sending} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+              <button onClick={handleConfirmSend} disabled={sending} className="px-4 py-2 rounded-lg bg-slate-800 text-white font-medium hover:bg-slate-900 disabled:opacity-50">{sending ? 'Sending…' : 'Send'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Invoice Template (Preview) */}
       <div className="flex justify-center overflow-auto pb-10">
-        <div id="invoice-preview" className="bg-white shadow-2xl w-[210mm] h-[297mm] relative text-gray-800 flex flex-col justify-between shrink-0">
+        <div id="invoice-preview" ref={invoiceRef2} className="bg-white shadow-2xl w-[210mm] h-[297mm] relative text-gray-800 flex flex-col justify-between shrink-0">
           <div className="p-12 pb-0">
             <div className="flex justify-between items-start mb-12">
               <div><h1 className="text-5xl font-bold text-dark tracking-tight">Invoice</h1></div>
@@ -310,7 +619,7 @@ export default function InvoiceGenerator() {
                 {logoSrc ? (
                   <img src={logoSrc} alt="Logo" className="max-h-full max-w-full object-contain" />
                 ) : (
-                  <div className="border border-dashed border-gray-300 w-full h-full flex items-center justify-center text-gray-400 text-xs bg-gray-50 group-hover:bg-gray-100 text-center px-4 no-print">
+                  <div className="pdf-hide no-print border border-dashed border-gray-300 w-full h-full flex items-center justify-center text-gray-400 text-xs bg-gray-50 group-hover:bg-gray-100 text-center px-4">
                     Click to add Logo
                   </div>
                 )}
@@ -350,7 +659,7 @@ export default function InvoiceGenerator() {
             <div className="mb-10 flex gap-2 items-center">
               <span className="text-label text-sm uppercase">Subject:</span>
               <span className="font-bold text-dark text-lg">
-                {isCustom ? customSubject : (isMeekhun ? "Rent" : "Chargeback from PAD Thai Food")}
+                {subject}
               </span>
             </div>
 
@@ -367,7 +676,7 @@ export default function InvoiceGenerator() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item) => {
+                  {renderRows.map((item) => {
                     const itemAmount = parseFloat(item.amount.toString()) || 0;
                     const itemGST = isMeekhun ? 0 : itemAmount / 11;
                     const itemNet = itemAmount - itemGST;
@@ -394,7 +703,7 @@ export default function InvoiceGenerator() {
             </div>
           </div>
 
-          <div className="bg-footer text-white p-12 mt-auto print:bg-[#0F172A] print:text-white text-xs">
+          <div className="bg-footer text-white p-12 mt-auto text-xs">
             <div className="flex justify-between items-end">
               <div className="space-y-4">
                 <h3 className="text-gray-400 uppercase mb-4 tracking-wider">Bank Details</h3>
@@ -405,7 +714,7 @@ export default function InvoiceGenerator() {
                   <p className="text-gray-300">ABN: {bankDetails.abn}</p>
                 </div>
               </div>
-              <div className="text-gray-500 font-mono text-[9px] print:hidden uppercase">VER: 2604171445</div>
+              <div className="pdf-hide no-print text-gray-500 font-mono text-[9px] uppercase">VER: 2608111700</div>
             </div>
           </div>
         </div>

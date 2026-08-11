@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "googleapis": "^174.0.1",
     "html-to-image": "^1.11.13",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.564.0",
     "next": "16.1.6",
     "react": "19.2.3",
